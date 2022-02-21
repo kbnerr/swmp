@@ -4,13 +4,13 @@
 #####################################################################
 
 rm(list = ls())
+dev.off()
 setwd("P://Your//Directory//Here")
 
 library(ggplot2)
 library(lubridate)
 library(stringr)
 library(tidyverse)
-library(stringr)
 
 # import data. must contain "date" column and a variable column
 data <- read.csv("your.csv", head=T)
