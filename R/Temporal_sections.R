@@ -17,7 +17,7 @@ library(ggplot2)
 library(metR)
 
 
-# import and aggregate CTD data
+# import and aggregate CTD data from a folder
 ctd_data <- list.files(path = path,
                        pattern = "*.csv",
                        full.names = TRUE) %>%
