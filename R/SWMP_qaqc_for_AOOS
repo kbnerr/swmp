@@ -1,0 +1,82 @@
+#####################################################################
+# This script imports, qaqcs, and appends SWMP data for upload to 
+# AOOS research workspace. This is a yearly deliverable for the EVOS
+# GWA project. Files should be subset by year after creation.
+#####################################################################
+
+rm(list = ls())
+dev.off()
+
+library(SWMPr)
+library(plyr)
+
+setwd("P://Your//Directory//Here")
+path <- '/Your//Path//Here'
+
+##### Water Quality #####
+# Define site names
+names <- c('kach3wq', 'kachdwq', 'kacsswq', 'kacsdwq')
+sites <- list()
+
+# Loop over site names to import files from folder
+for (s in names) {
+ sites[[s]] <- import_local(path, s)
+}
+
+# QAQC and append files to long format
+wqdat <-
+ ldply(
+  sites,
+  .fun = function(x)
+   qaqc(x, c('0', '1', '2', '3', '4', '5')),
+  .id = TRUE
+ )
+
+# output to .csv
+write.csv(wqdat, file = "WQ_allstations.csv")
+
+
+##### Weather #####
+# Define site names
+names <- c('kachomet', 'kacapmet')
+sites <- list()
+
+# Loop over site names to import files from folder
+for (s in names) {
+ sites[[s]] <- import_local(path, s)
+}
+
+# QAQC and append files to long format
+wxdat <-
+ ldply(
+  sites,
+  .fun = function(x)
+   qaqc(x, c('0', '1', '2', '3', '4', '5')),
+  .id = TRUE
+ )
+
+# output to .csv
+write.csv(wxdat, file = "MET_allstations.csv")
+
+
+##### Nutrients #####
+# Define site names
+names <- c('kachsnut', 'kachdnut', 'kachhnut', 'kacssnut', 'kacsdnut')
+sites <- list()
+
+# Loop over site names to import files from folder
+for (s in names) {
+ sites[[s]] <- import_local(path, s)
+}
+
+# QAQC and append files to long format
+nutdat <-
+ ldply(
+  sites,
+  .fun = function(x)
+   qaqc(x, c('0', '1', '2', '3', '4', '5')),
+  .id = TRUE
+ )
+
+# output to .csv
+write.csv(nutdat, file = "NUT_allstations.csv")
