@@ -1,7 +1,11 @@
 #####################################################################
 # This script imports, qaqcs, and appends SWMP data for upload to 
 # AOOS research workspace. This is a yearly deliverable for the EVOS
-# GWA project. Files should be subset by year after creation.
+# GWA project. Files should be subset by year after creation. Input 
+# data are exemplified:
+# https://github.com/kbnerr/SWMP/upload/main/data/SWMP_Data
+# and can be downloaded from the CDMO Advanced Query System:
+# https://cdmo.baruch.sc.edu/aqs/
 #####################################################################
 
 rm(list = ls())
