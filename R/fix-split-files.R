@@ -22,12 +22,11 @@ path = file.path(wd, filename)
 wd = getwd()
 dir.docs = file.path(wd, "docs")
 dir.figs = file.path(wd, "figs")
-dir.data.final = file.path(wd, "data-final")
-dir.data.inprog = file.path(wd, "data-inprog")
+dir.data = file.path(wd, "data")
 dir.R = file.path(wd,"R")
 
 # define path to the weird data file,
-path = file.path(dir.data.inprog, "2022")
+path = file.path(dir.data, "2022")
 filename = file.path("kacsswq122122_wierddata")
 
 # Code --------------------------------------------------------------------
