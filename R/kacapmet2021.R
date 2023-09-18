@@ -140,16 +140,16 @@ tmp4 %>%
   # Plot TRUE or FALSE, solid bars indicate all three max/min times do not fall within interval,
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 
-# We can see that max/min times appear to be randomly off to for the first half of September,
-# but then in mid September begins a data block where almost times are bad,
+# We can see that max/min times appear to be randomly off for the first half of September,
+# but then in mid September begins a data block where almost all times are bad,
 # There is probably something wrong with the timestamps since no 'good' times are found even randomly,
 # Looking at the tibble, RECORD 23993 begins an offset by 15 min in subsequent timestamps,
 # This aligns with station maintenance on 2021-09-22,
 
 tmp4 %>%
-  # Correct the timestamps after RECORD 23993; subsequent code is essentially same as before,
-  mutate(TIMESTAMP_fix_23993 = case_when(RECORD <= 23993 ~ TIMESTAMP_fix,
-                                       RECORD > 23993 ~ lag(TIMESTAMP_fix))) %>%
+  # Correct timestamps starting at RECORD 23993; subsequent code is essentially same as before,
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                       RECORD >= 23993 ~ lag(TIMESTAMP_fix))) %>%
   relocate(TIMESTAMP_fix_23993, .after = TIMESTAMP_fix) %>%
   mutate(interval = interval(TIMESTAMP_fix_23993 - minutes(15), TIMESTAMP_fix_23993),
          MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993) > date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)),
@@ -174,11 +174,11 @@ tmp4 %>%
 # RECORD 26202 - same issue as before, here begins 15 min offset aligns with site maintenance on 2021-10-15,
   
 tmp4 %>%
-  mutate(TIMESTAMP_fix_23993 = case_when(RECORD <= 23993 ~ TIMESTAMP_fix,
-                                        RECORD > 23993 ~ lag(TIMESTAMP_fix)),
-         # Correct the timestamps after RECORD 26202; surrounding code is essentially same as before,
-         TIMESTAMP_fix_23993_26202 = case_when(RECORD <= 26202 ~ TIMESTAMP_fix_23993,
-                                                   RECORD > 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                        RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         # Correct timestamps starting at RECORD 26202; surrounding code is essentially same as before,
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                                   RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
   relocate(TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202, .after = TIMESTAMP_fix) %>%
   mutate(interval = interval(TIMESTAMP_fix_23993_26202 - minutes(15), TIMESTAMP_fix_23993_26202),
          MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
@@ -208,10 +208,10 @@ tmp4 %>%
   # MaxWSpT 28514 - 28606, 31479 - 31486
 
 tmp4 %>%
-  mutate(TIMESTAMP_fix_23993 = case_when(RECORD <= 23993 ~ TIMESTAMP_fix,
-                                         RECORD > 23993 ~ lag(TIMESTAMP_fix)),
-         TIMESTAMP_fix_23993_26202 = case_when(RECORD <= 26202 ~ TIMESTAMP_fix_23993,
-                                               RECORD > 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
   relocate(TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202, .after = TIMESTAMP_fix) %>%
   # Correct the max/min times where -1hr offset occurs,
   mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxTempT) + hours(1),
@@ -249,10 +249,10 @@ tmp4 %>%
   
 # I think major revisions to timetamps are done, so we can save the corrections as a new tibble,
 tmp5 = tmp4 %>%
-  mutate(TIMESTAMP_fix_23993 = case_when(RECORD <= 23993 ~ TIMESTAMP_fix,
-                                         RECORD > 23993 ~ lag(TIMESTAMP_fix)),
-         TIMESTAMP_fix_23993_26202 = case_when(RECORD <= 26202 ~ TIMESTAMP_fix_23993,
-                                               RECORD > 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
   relocate(TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202, .after = TIMESTAMP_fix) %>%
   mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxTempT) + hours(1),
                                   !RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxTempT)) %>% format(., "%H:%M"),
@@ -290,7 +290,6 @@ tmp5 %>%
 
 # In general, max/min timestamps don't seem to be off by more than a couple minutes,
 # Let's test a new interval of 17 minutes to see if what happens to our bad timestamps,
-
 tmp5 %>%
   mutate(interval = interval(TIMESTAMP_fix_23993_26202 - minutes(17), TIMESTAMP_fix_23993_26202),
          # will need to also re-evaluate the time checks since they depend on the interval,
@@ -301,8 +300,44 @@ tmp5 %>%
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 # No errors!
 
-# So what if we were to add 2 minutes to all max/min times instead of altering the interval?
-
+# So what if we were to just shift our max/min times by -2 minutes instead of altering the interval?
+tmp4 %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD <= 23993 ~ TIMESTAMP_fix,
+                                         RECORD > 23993 ~ lag(TIMESTAMP_fix)),
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD <= 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD > 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  relocate(TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202, .after = TIMESTAMP_fix) %>%
+  mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxTempT) + hours(1),
+                                  !RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxTempT)) %>% format(., "%H:%M"),
+         MinTempT_fix = case_when(RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP_fix_23993_26202) + hm(MinTempT) + hours(1),
+                                  !RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP_fix_23993_26202) + hm(MinTempT)) %>% format(., "%H:%M"),
+         MaxWSpdT_fix = case_when(RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxWSpdT) + hours(1),
+                                  !RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP_fix_23993_26202) + hm(MaxWSpdT)) %>% format(., "%H:%M")) %>%
+  relocate(MaxTempT_fix, .after = MaxTempT) %>%
+  relocate(MinTempT_fix, .after = MinTempT) %>%
+  relocate(MaxWSpdT_fix, .after = MaxWSpdT) %>%
+  # Shift the interval -2 minutes; surrounding code is essentially the same as before,
+  mutate(interval = interval(TIMESTAMP_fix_23993_26202 - minutes(15), TIMESTAMP_fix_23993_26202) %>% int_shift(by = minutes(-2)),
+         MaxTempT_check = if_else(hm(MaxTempT_fix) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MaxTempT_fix),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MaxTempT_fix)),
+         MinTempT_check = if_else(hm(MinTempT_fix) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MinTempT_fix),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MinTempT_fix)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT_fix) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MaxWSpdT_fix),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MaxWSpdT_fix)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  relocate(interval, .after = TIMESTAMP_fix_23993_26202) %>%
+  relocate(MaxTempT_check, .after = MaxTempT_fix) %>%
+  relocate(MinTempT_check, .after = MinTempT_fix) %>%
+  relocate(MaxWSpdT_check, .after = MaxWSpdT_fix) %>%
+# subset out any records with max/min times 
+  filter(MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad > 0) %T>%
+  View() %>% 
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 
 
 
