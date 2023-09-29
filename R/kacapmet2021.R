@@ -37,6 +37,7 @@ check_MET_vars_dat = function (x) {
   }
 }
 
+# Code --------------------------------------------------------------------
 
 ## Read in data from local path
 tmp1 = list.files(path = file.path(dir.data, "kacapmet2021"), pattern = ".csv", full.names = TRUE) %>%
