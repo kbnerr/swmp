@@ -115,11 +115,11 @@ which(tmp4$TIMESTAMP %within% interval(lag(tmp4$TIMESTAMP_fix, n = 4), lead(tmp4
 tmp4 %>%
   # define the 15 min interval
   mutate(interval = interval(TIMESTAMP_fix - minutes(15), TIMESTAMP_fix),
-         # New col for each max/min as datetime,
+         # New col for each max/min checks as datetime.
+         # This check uses an ifelse to account for close-but-incorrect times around date changes,
+         # e.g., a max/min time of 23:59 is close to the interval 0:00-0:15 for the next day,
+         # but these instances should be treated differently than if a max/min of 23:59 occurs within 23:45-0:00 of the same date,
          MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
-                                  # Logic statement to account for close-but-incorrect times around date changes,
-                                  # e.g., a max/min time of 23:59 is close to the interval 0:00-0:15 for the next day,
-                                  # but these instances should be treated differently than if a max/min of 23:59 occurs within 23:45-0:00 of the same date,
                                   date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)) + hm(MaxTempT),
                                   date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1])) + hm(MaxTempT)),
          MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
@@ -128,7 +128,7 @@ tmp4 %>%
          MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
                                   date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)) + hm(MaxWSpdT),
                                   date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1])) + hm(MaxWSpdT)),
-         # TRUE if the timestamp does not fall within the interval, i.e., it is bad,
+         # TRUE if the timestamp is bad, i.e., the time does not fall within interval,
          MaxTempT_bad = !MaxTempT_check %within% interval,
          MinTempT_bad = !MinTempT_check %within% interval,
          MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
@@ -138,7 +138,7 @@ tmp4 %>%
   relocate(MinTempT_check, .after = MinTempT) %>% 
   relocate(MaxWSpdT_check, .after = MaxWSpdT) %T>%
   View() %>%
-  # Plot TRUE or FALSE, solid bars indicate all three max/min times do not fall within interval,
+  # Plot TRUE or FALSE, indicating how many of the three max/min times are bad,
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 
 # We can see that max/min times appear to be randomly off for the first half of September,
@@ -202,13 +202,14 @@ tmp4 %>%
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 
 # Similar pattern of an offset during the next maintenance on 2021-11-08 and 2021-12-09.
-# However, this time it's the max/min times instead of timestamps, and not all subsequent records were affected,
+# Nov has a block of ~100 offset records and Dec has ~dozen offset records.
+# Looking at the data, however, the max/min times seem shifted instead of timestamps,
 # Max/min times have a -1 hr offset, interestingly with different start/end RECORDs depending on the parameter:
   # MaxTempT 28515 - 28606, 31478 - 31486
   # MinTempT 28514 - 28607, 31478 - 31487
   # MaxWSpT 28514 - 28606, 31479 - 31486
 
-tmp4 %>%
+dat.v4 %>%
   mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
                                          RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
          TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
@@ -245,8 +246,10 @@ tmp4 %>%
   View() %>% 
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 
-# Good. At least our faulty mx/min times now appear random.
-# Interesting that the corrected max/min times in Nov/Dec appear to be completely correct,
+# Good. At least our faulty max/min times now appear random.
+# Interesting that the corrected max/min times in Nov/Dec appear to be completely matched up;
+# This may be due to data being logged correctly for a period around maintenance when tech would probably sync with computer time.
+# A switch to AKST after daylight savings may explain these offset patterns
   
 # I think major revisions to timetamps are done, so we can save the corrections as a new tibble,
 tmp5 = tmp4 %>%
@@ -289,6 +292,8 @@ tmp5 %>%
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
 # Yep- these data look to be ok.
 
+filter(tmp5, MaxTempT_bad == TRUE & MinTempT_bad == TRUE & MaxWSpdT_bad == TRUE) %T>% View()
+
 # In general, max/min timestamps don't seem to be off by more than a couple minutes,
 # Let's test a new interval of 17 minutes to see if what happens to our bad timestamps,
 tmp5 %>%
@@ -299,7 +304,17 @@ tmp5 %>%
          MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %T>%
   View() %>% 
   {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
-# No errors!
+# Looks like one error
+
+# View which row(s) with an error
+tmp5 %>%
+  mutate(interval = interval(TIMESTAMP_fix_23993_26202 - minutes(17), TIMESTAMP_fix_23993_26202),
+         # will need to also re-evaluate the time checks since they depend on the interval,
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  filter(MaxTempT_bad == TRUE | MinTempT_bad == TRUE | MaxWSpdT_bad == TRUE) %T>%
+  View()
 
 # So what if we were to just shift our max/min times by -2 minutes instead of altering the interval?
 tmp4 %>%

@@ -1,0 +1,127 @@
+---
+title: "2022 KACAPMET supplement to metadata"
+author: "Chris Guo"
+date: "2024-06-14"
+output: 
+  word_document:
+      reference_docx: "doc/knit_word_ref_v1.docx"
+      fig_width: 6
+      fig_height: 3.5
+      df_print: "tibble"
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r include = FALSE}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(size = "scriptsize")
+```
+
+Built with R version `r getRversion()`.
+
+## Introduction
+
+## Set up
+
+Load required packages, define directory, and set options:
+
+```{r}
+# Packages
+library(tidyverse)
+library(lubridate)
+library(magrittr)
+
+# Directory
+wd = here::here()
+dirs = wd %>% list.files() %>% str_subset(pattern = "\\.|_|LICENSE", negate = TRUE)
+for (i in seq_along(dirs)) {
+  name = str_replace_all(dirs[i], "^", "dir.")
+  path = str_replace_all(dirs[i], "^", str_c(wd, "/"))
+  assign(name, path)
+  rm(name, path, i)
+}
+
+# Options
+options("digits.sec" = 2)
+```
+
+## Read in data
+
+```{r}
+ok.dat = read_csv(file = file.path(dir.data, "kacapmet010122_qc.dat"), col_types = "c") %>%
+  # Convert vars to appropriate object type,
+  mutate(TIMESTAMP = TIMESTAMP %>% mdy_hm(),
+         RECORD = RECORD %>% as.integer,
+         # make sure to keep max/min times as.character and add leading 0's
+         across(ends_with("T", ignore.case = FALSE), ~ format(as_datetime(hm(.x)), "%H:%M")),
+         # all other characters as double
+         across(where(is.character) & !ends_with("T", ignore.case = FALSE), as.double)) %>%
+  # to match yearly data
+  rename(DateTimeStamp = TIMESTAMP)
+
+dat.v1 = read_csv(file = file.path(dir.data, "kacapmet2022.csv")) %>%
+  select(-c(RowID, `Station Code`)) %>% # remove to better match up with OK data
+  mutate(DateTimeStamp = DateTimeStamp %>% mdy_hms(truncated = 3),
+         RECORD = RECORD %>% as.integer(),
+         across(.cols = c(MaxTempT, MinTempT, MaxWSpdT), ~ format(as_datetime(hms(.)), "%H:%M")))
+```
+
+```{r}
+dat.v2 = filter(dat.v1, DateTimeStamp < mdy_hm("03/15/2022 13:45"))
+```
+
+```{r}
+dat.v3 = slice(dat.v2, -(1:2))
+
+x = dat.v3[c(1:nrow(ok.dat)), c(3:4)]
+
+y = ok.dat[ , c(3:4)] %>% round(1)
+
+setequal(x, y)
+```
+
+```{r}
+dat.v3 %>%
+  left_join(select(ok.dat, RECORD, DateTimeStamp), by = "RECORD", suffix = c("", "_ok")) %>%
+  mutate(DateTimeStamp_fix = case_when(!is.na(DateTimeStamp_ok) ~ DateTimeStamp_ok,
+                                       is.na(DateTimeStamp_ok) ~ DateTimeStamp)) %>%
+  relocate(DateTimeStamp_fix, .after = DateTimeStamp) %>% View()
+```
+
+```{r}
+dat.v3 %>%
+  # Define the 15 min interval,
+  mutate(interval = interval(DateTimeStamp - minutes(15), DateTimeStamp),
+         # Add a col for each max/min time to check against the 15 min interval,
+         # This uses an if_else statement to account for close-but-incorrect times around date changes,
+         # e.g., a max/min time of 23:59 is close to the interval 0:00-0:15 for the next day,
+         # but these instances should be treated differently than if a max/min of 23:59 occurs within 23:45-0:00 of the same date,
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(DateTimeStamp) > date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(DateTimeStamp) > date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)) + hm(MinTempT),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(DateTimeStamp) > date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(DateTimeStamp, default = .$DateTimeStamp[1])) + hm(MaxWSpdT)),
+         # Add another column with logical value for whether the max/min time check falls within interval,
+         # TRUE if the timestamp is bad, i.e., the time does not fall within interval,
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  # Relocate cols for convenience,
+  relocate(interval, .after = DateTimeStamp) %>%
+  relocate(MaxTempT_check, .after = MaxTempT) %>%
+  relocate(MinTempT_check, .after = MinTempT) %>% 
+  relocate(MaxWSpdT_check, .after = MaxWSpdT) %>%
+  # Plot TRUE or FALSE, indicating how many of the three max/min times are bad,
+  # An empty graoh would indicate all max/min checks are within interval,
+  {ggplot(data = .) + geom_col(aes(x = RECORD, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad), position = "identity")}
+```
+
+```{r}
+filter(dat.v3, RECORD > max(ok.dat$RECORD))
+```

@@ -1,0 +1,540 @@
+---
+title: "2021 KACAPMET supplement to metadata"
+author: "Chris Guo"
+output: 
+  word_document:
+      reference_docx: "doc/knit_word_ref_v1.docx"
+      fig_width: 6
+      fig_height: 3.5
+      df_print: "tibble"
+date: 2024-02-12
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r include = FALSE}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(size = "scriptsize")
+```
+
+## Author summary
+
+During its tertiary review of 2021 KACAPMET data, the CDMO identified many inaccuracies in parameters MaxTempT, MinTempT, and MaxWSpdT (herein, referred to as "max/min times" generally), as well as inaccurate CumPrecip calculations.
+All of the issues stem from inaccurate DatetimeStamp values (herein, "timestamps") beginning on 08/29/2021 12:15, which were caused by an error related to GPS time synchronization.
+The GPS sync error was identified during the original data collection and resolved sometime in 2022 by the then SWMP technician.
+However, the technician did not resolve all issues within the data when KACAPMET 2021 data was submitted to the CDMO for tertiary review.
+During this review, the data inaccuracies were found to be very extensive such that a return to the raw data collection was needed.
+
+This document includes the reasoning and code used to make corrections to the data by the succeeding technician (author).
+The approach to correcting the raw data was to get to a point such that QAQC could be completed using the NERR CDMO flagging codes, i.e., bad sensor readings caused by incorrect timestamps would be identified as in secondary/tertiary QAQC.
+So, the corrections made here fix only the major timestamp issue related to GPS sync error.
+The inaccuracies in max/min times and CumPrecip would therefore be up to end users to address.
+However, this document contains some interpretation of the inaccuracies in those parameter data, and example code for potential fixes are provided for end users to explore.
+
+## Set up
+
+This document was built with R version `r getRversion()`.
+Load required packages, define directory, and set options:
+
+```{r}
+# Packages
+library(tidyverse)
+library(lubridate)
+library(magrittr)
+
+# Directory
+wd = here::here()
+dir.doc = file.path(wd, "doc")
+dir.data = file.path(wd, "data")
+dir.out = file.path(wd, "output")
+
+# Options
+options("digits.sec" = 2)
+```
+
+## Read in data
+
+Since the timestamp issues were observed in the original data collection, we should work with the raw .dat files.
+I added the monthly files to the data directory in a folder named "kacapmet2021".
+I used the following code to convert .dat files to .csv prior to reading them into the R environment, although, this was not really necessary.
+
+```{r eval = FALSE}
+old.names = list.files(path = file.path(dir.data, "kacapmet2021"), pattern = ".dat", full.names = TRUE)
+new.names = gsub(".dat$", ".csv", old.names)
+file.rename(old.names, new.names)
+```
+
+We can check the file names with `list.files()`.
+Then we look at how the raw data looks by reading the first lines of a file.
+
+```{r}
+list.files(path = file.path(dir.data, "kacapmet2021"), pattern = ".csv", full.names = FALSE)
+read_lines(file = file.path(dir.data, "kacapmet2021", "kacapmet011521.csv"), n_max = 6)
+```
+
+There are a few header rows that we do not need: lines 1, 3, and 4.
+We'll keep the second row with data descriptions and skip the rest.
+Note we are comma separated and that the we have escaped quotes around headers and date/time values.
+We'll read each month's data applying the following fixes to the data structure.
+We save it as a list of data tables.
+See code comments for explanations of each step.
+
+```{r warning = FALSE}
+# Identify the file paths for each data set
+dat.v1 = list.files(path = file.path(dir.data, "kacapmet2021"), pattern = ".csv", full.names = TRUE) %>%
+  # Skip first line with file summary info, declare all columns as.character type
+  map(., ~ read_csv(., skip = 1, col_types = "c")) %>%
+  # Remove lines 3-4 with unit info
+  map(., ~ slice(., -(1:2))) %>%
+  # Convert each table to tibble type
+  map(., tibble) %>%
+  # Fix max/min times missing leading 0's
+  map(., ~ mutate(., across(.cols = c(MaxTempT, MinTempT, MaxWSpdT), ~ format(as_datetime(hm(.)), "%H:%M"))))
+```
+
+Warnings for parsing problems are addressed by making all values character class.
+We return parameters to appropriate type in the following chunk.
+The timestamp issues appear in the latter datasets- showing dates from 1944.
+Also, looking at the list of the datasets, we see that some months have more records than typical.
+For example, we see that November and December data both include the September data.
+So there's some obvious clean up that needs to happen before diving into the timestamp problem.
+
+## Initial data clean up
+
+First, we'll bind all data together.
+This way we can easily check where we have duplicated rows and remove them.
+Then we should check whether there any data gaps in RECORD, which should be consistent regardless of GPS or incorrect time settings.
+Also, we'll check if there were any power failures.
+The CR1000x manual indicates a drop below 7V will affect data.
+Field notes from 2021 do not mention any power removal.
+
+```{r results = "hide"}
+# Collapse the list of data
+dat.v2 = list_rbind(dat.v1)
+
+# Inspect the duplicates
+dat.v2[which(duplicated(dat.v2)), ]
+
+# Remove duplicates and save as new object
+dat.v3 = distinct(dat.v2) %>%
+  # Convert columns to appropriate type,
+  mutate(TIMESTAMP = TIMESTAMP %>% as_datetime(),
+         RECORD = RECORD %>% as.integer(),
+         across(ends_with("T", ignore.case = FALSE), as.character), # make sure to keep max/min times as.character
+         across(where(is.character) & !ends_with("T", ignore.case = FALSE), as.numeric)) # all else as.numeric
+
+# Differences in RECORDS other than 1 will indicate a gap or non-sequential order,
+diff(dat.v3$RECORD) %>% 
+  unique()
+
+# Plot voltage,
+ggplot(data = dat.v3) +
+  geom_line(aes(x = RECORD, y = AvgVolt), color = "blue") +
+  geom_hline(yintercept = 7, color = "red")
+```
+
+AvgVolt doesn't drop anywhere near 7V, and there doesn't seem to be any unusual patterns in RECORD.
+However, the CMDO has identified repeat records from this station in their 2022 tertiary review.
+The issue is unresolved at the writing of this doc.
+These repeat data have separate RECORD values but actually should share the same timestamp.
+CDMO found this issue in 2022 data but it may not easily show up in 2021 because bad timestamps are confounding the issue.
+
+## Inspect the problem data
+
+The CDMO indicated that timestamp issues occur after 08/29/2021 12:00 (RECORD 21688), and continue into 2022.
+First we subset the data containing issues, keeping the last known good timestamp.
+Then, we use the good timestamp to attribute new timestamps at the expected 15 min interval.
+Afterwards, we'll be able to compare the new timestamps to the old to see how extensive the issue is, i.e., are any timestamps in the data even close to where they are expected to be?
+
+```{r}
+# Subset the data,
+dat.v4 = filter(dat.v3, RECORD >= 21688)
+
+# Add a new column for 'fixed' timestamps,
+dat.v4 = mutate(dat.v4, TIMESTAMP_fix = NA) %>% 
+  relocate(TIMESTAMP_fix, .after = TIMESTAMP)
+
+# New timestamps w/ 15 min interval
+for (i in 1:length(dat.v4$TIMESTAMP)) {
+  dat.v4$TIMESTAMP_fix[i] = (dat.v4$TIMESTAMP[1] + ((i-1) * minutes(15)))
+}
+
+# Convert new timestamps to proper format,
+dat.v4 = mutate(dat.v4, TIMESTAMP_fix = as_datetime(TIMESTAMP_fix, tz = "UTC"))
+
+# See which of the fixed timestamps match up with the old ones (within an hour),
+which(dat.v4$TIMESTAMP %within% interval(lag(dat.v4$TIMESTAMP_fix, n = 4), lead(dat.v4$TIMESTAMP_fix, n = 4))) %>%
+  dat.v4[.,]
+```
+
+Looks like there's about an hour of records on 2021-09-22 that match between the two timestamps.
+And there's a single record on 2021-10-15 that is within 15 minutes.
+Both of these instances coincide with station maintenance according to the field notes.
+Looking at the row 4 in the above table (timestamp 2021-09-22 12:00, RECORD 23992), we see an example of MaxTempT not falling within interval (11:54).
+If we suspect that this RECORD is actually a repeat of timestamp 2021-09-22 12:00, then the max/min times all fall within interval for that RECORD.
+However, shifting that one RECORD back by 15 minutes would mean that subsequent RECORDs should also be shifted back.
+Since we do not know how often this occurs (we may suspect around maintenance schedule but can't be sure), we'll need to develop a way to check max/min times against an interval based on expected timestamps.
+
+## Adjust timestamps
+
+According to CDMO, we have lots of instances where max/min times are outside of their expected 15 minute interval.
+For example, we can look at RECORD 26201 (row 5 from the previous table), where the expected timestamp would be 2021-10-15 12:00 after shifting all data back 15 minutes starting at RECORD 23992.
+We see that MinTempT (11:43) which would not fall within the expected interval of 11:45-12:00, but also that MaxTempT (11:59) would fall in that interval as expected.
+Scanning across the data briefly, I see this issue of misaligned max/min times a lot.
+Something that also stands out is that the max/min times are actually somewhat close, e.g., a MaxTempT of 12:58 does not within the 13:00 - 13:15 interval but it almost does.
+That the max/min times are somewhat close should show enough of a pattern to check whether the fixed timestamps are faulty or not.
+The following code adds new columns to the data so that we can perform this check of max/min times against timestamps.
+We graph the instances of bad max/min times over timestamps.
+We can add a T pipe before the plotting function to also generate the data table in a viewable tab, with this: `%T>% View() %>%`.
+See code comments for explanations of each step.
+
+```{r}
+dat.v4 %>%
+  # Define the 15 min interval,
+  mutate(interval = interval(TIMESTAMP_fix - minutes(15), TIMESTAMP_fix),
+         # Add a col for each max/min time to check against the 15 min interval,
+         # This uses an if_else statement to account for close-but-incorrect times around date changes,
+         # e.g., a max/min time of 23:59 is close to the interval 0:00-0:15 for the next day,
+         # but these instances should be treated differently than if a max/min of 23:59 occurs within 23:45-0:00 of the same date,
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP_fix) > date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP_fix, default = .$TIMESTAMP_fix[1])) + hm(MaxWSpdT)),
+         # Add another column with logical value for whether the max/min time check falls within interval,
+         # TRUE if the timestamp is bad, i.e., the time does not fall within interval,
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  # Relocate cols for convenience,
+  relocate(interval, .after = TIMESTAMP_fix) %>%
+  relocate(MaxTempT_check, .after = MaxTempT) %>%
+  relocate(MinTempT_check, .after = MinTempT) %>% 
+  relocate(MaxWSpdT_check, .after = MaxWSpdT) %>%
+  # Plot TRUE or FALSE, indicating how many of the three max/min times are bad,
+  # An empty graoh would indicate all max/min checks are within interval,
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
+```
+
+We can see that max/min times appear to be bad (but in a *random* pattern) for the first half of September.
+Then in mid September begins a period where all RTECORDS are bad (the vertical bars seem to be caused by plotting).
+There is likely something wrong with these timestamps since no 'good' times are found even randomly.
+Looking at the data table, RECORD 23993 (which we identified earlier) begins a mismatch in all subsequent RECORDS between max/min times and expected interval.
+As mentioned before, this RECORD aligns with station maintenance on 2021-09-22.
+We can shift the timestamps by 15 minutes at RECORD 23993 and check our plot and table again.
+Since the code for generating the plot is cumbersome to read, I only show the additional lines that shift the timestamps.
+See the .Rmd file for the full code.
+
+```{r eval = FALSE}
+dat.v4 %>%
+  # Adjust timestamps starting at RECORD 23993; subsequent code is essentially same as before,
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix))) %>%
+  ...
+```
+
+```{r echo = FALSE}
+dat.v4 %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix))) %>%
+  relocate(TIMESTAMP_fix_23993, .after = TIMESTAMP_fix) %>%
+  mutate(interval = interval(TIMESTAMP_fix_23993 - minutes(15), TIMESTAMP_fix_23993),
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993) > date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993) > date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993) > date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP_fix_23993, default = .$TIMESTAMP_fix_23993[1])) + hm(MaxWSpdT)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  relocate(interval, .after = TIMESTAMP_fix_23993) %>%
+  relocate(MaxTempT_check, .after = MaxTempT) %>%
+  relocate(MinTempT_check, .after = MinTempT) %>% 
+  relocate(MaxWSpdT_check, .after = MaxWSpdT) %>%
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
+```
+
+We find the same issue as before but now starting at RECORD 26202.
+Similarly, this coincides with site maintenance on 2021-10-15.
+We'll shift the timestamps again and re-generate the plot and table.
+Since the code for generating the plot is cumbersome to read, I only show the additional lines that shift the timestamps.
+See the .Rmd file for the full code.
+
+```{r eval = FALSE}
+dat.v4 %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         # Adjust timestamps starting at RECORD 26202; surrounding code is essentially same as before,
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  ...
+```
+
+```{r echo = FALSE}
+dat.v4 %>%
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         # Adjust timestamps starting at RECORD 26202; surrounding code is essentially same as before,
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993))) %>%
+  relocate(TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202, .after = TIMESTAMP_fix) %>%
+  mutate(interval = interval(TIMESTAMP_fix_23993_26202 - minutes(15), TIMESTAMP_fix_23993_26202),
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP_fix_23993_26202) > date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP_fix_23993_26202, default = .$TIMESTAMP_fix_23993_26202[1])) + hm(MaxWSpdT)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  relocate(interval, .after = TIMESTAMP_fix_23993_26202) %>%
+  relocate(MaxTempT_check, .after = MaxTempT) %>%
+  relocate(MinTempT_check, .after = MinTempT) %>%
+  relocate(MaxWSpdT_check, .after = MaxWSpdT) %>%
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP_fix_23993_26202, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
+```
+
+This time we have a similar timestamp issues coinciding with next two maintenances on 2021-11-08 and 2021-12-09.
+Except, there are not long periods of bad records.
+November has a block of about 100 bad records and December has about a dozen bad records.
+Looking at the data table, it seems that timestamps are correct but max/min times are not, i.e., there are no duplicate timestamps like in other months data.
+In the following section, I offer data correction scenarios after shifting max/min times.
+However, since our goal was only to adjust the incorrect timestamps caused by GPS sync error, we will stop here and apply the fixes made so far; additionally, we will need to remove the duplicate records:
+
+-   Replace gps sync error timestamps (`dat.v4$TIMESTAMP`) with expected timestamps (i.e., `dat.v4$TIMESTAMP_fix`)
+-   Identify correctly timestamps for duplicate records (i.e., `RECORD == 23993` and `RECORD == 26202`)
+-   Adjust subsequent timestamps after correcting duplicates (i.e., `lag()`)
+-   Remove duplicate records ((i.e., `RECORD == 23993` and `RECORD == 26202`)
+
+We'll export these as a new version of the data table (`dat.v6`).
+See code comments for explanations of each step.
+
+```{r}
+# Save new data table with adjusted timestamps
+dat.v5 = dat.v4 %>%
+  # Fix duplicate at RECORD 23993
+  mutate(TIMESTAMP_fix_23993 = case_when(RECORD < 23993 ~ TIMESTAMP_fix,
+                                         RECORD >= 23993 ~ lag(TIMESTAMP_fix)),
+         # Fix duplicate at RECORD 26202
+         TIMESTAMP_fix_23993_26202 = case_when(RECORD < 26202 ~ TIMESTAMP_fix_23993,
+                                               RECORD >= 26202 ~ lag(TIMESTAMP_fix_23993)),
+         # Replace old timestamps w/ new ones, convert POSIXct to character cLass
+         TIMESTAMP = TIMESTAMP_fix_23993_26202) %>%
+  # Remove duplicated records
+  filter(!RECORD %in% c(23993, 26202)) %>%
+  # Clean up extra columns
+  select(-c(TIMESTAMP_fix, TIMESTAMP_fix_23993, TIMESTAMP_fix_23993_26202))
+
+# Save the data table in the same format as raw .dat file
+dat.v6 = dat.v5 %>%
+  # Convert TIMESTAMP to character class, set tz = 'GMT' or the function defaults to local tz
+  mutate(TIMESTAMP = TIMESTAMP %>% strftime(tz = "GMT"),
+         # Convert RECORD to numeric class - probably not needed
+         RECORD = RECORD %>% as.numeric()) %>%
+  # Annoyingly, the max/min times use integers for both hours and minutes,
+  # i.e., "03:20" would be "3:2" in the raw data.
+  # The following solves this, although there's probably a more elegant way to do it,
+  # Separate each max/min time col
+  separate_wider_delim(cols = c(MaxTempT, MinTempT, MaxWSpdT), delim = ":", names = c("h", "m"), names_sep = "_") %>%
+  # Changing class to integer removes all 'extra' zeros
+  mutate(across(.cols = contains("_"), ~ as.integer(.x))) %>%
+  # unite each of the hour/min cols again
+  unite(col = "MaxTempT", c(MaxTempT_h, MaxTempT_m), sep = ":", remove = TRUE) %>%
+  unite(col = "MinTmepT", c(MinTempT_h, MinTempT_m), sep = ":", remove = TRUE) %>%
+  unite(col = "MaxWSpdT", c(MaxWSpdT_h, MaxWSpdT_m), sep = ":", remove = TRUE) %>%
+  # Return max/min times to character class
+  mutate(across(.cols = ends_with("T", ignore.case = FALSE), ~ as.character(.x)))
+
+# Grab first row of a monthly file- I use the first of 2021 but any should do,
+first_row = read_csv(file = file.path(dir.data, "kacapmet2021", "kacapmet082321.csv"), col_names = FALSE, col_types = cols(.default = col_character()) , n_max = 1)
+# Grab the next three rows,
+next_rows = read_csv(file = file.path(dir.data, "kacapmet2021", "kacapmet011521.csv"), col_names = FALSE, na = character(), skip = 1, n_max = 3)
+
+# Export the table appending the first row, next three header rows, and fixed data
+write_csv(x = first_row, file = file.path(dir.out, "kacapmet082921.dat"), col_names = FALSE, quote = c("all"))
+write_csv(x = next_rows, file = file.path(dir.out, "kacapmet082921.dat"), col_names = FALSE, quote = c("all"), na = "", append = TRUE)
+write_csv(x = dat.v6, file = file.path(dir.out, "kacapmet082921.dat"), col_names = FALSE, quote = c("all"), na = "", append = TRUE)
+```
+
+Note: we set the output file as `dir.out` which differ depending on your working directory.
+
+## Adjust max/min times
+
+This section includes code chunks that evaluate and adjust max/min times in the data (`dat.v5`).
+The following was not performed as QAQC for final data, and is only meant to provide end users a possible approach to correcting max/min time errors.
+We'll use the same graph for interpreting bad max/min times as before.
+Looking at the data table after last check we did, the bad max/min times in Nov/Dec have different start/end RECORDs depending on the parameter:
+
+-   MaxTempT 28515 - 28606, 31478 - 31486
+-   MinTempT 28514 - 28607, 31478 - 31487
+-   MaxWSpT 28514 - 28606, 31479 - 31486
+
+We'll correct these max/min times and rerun our visual check.
+Since the code for generating the plot is cumbersome to read, I only show the additional lines that shift the max/min times.
+See the .Rmd file for the full code.
+
+```{r eval = FALSE}
+  # Correct the max/min times where -1hr offset occurs,
+dat.v5 %>%
+  mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT) + hours(1),
+                                  !RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT)) %>% format(., "%H:%M"),
+         MinTempT_fix = case_when(RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT) + hours(1),
+                                  !RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT)) %>% format(., "%H:%M"),
+         MaxWSpdT_fix = case_when(RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT) + hours(1),
+                                  !RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT)) %>% format(., "%H:%M")) %>%
+  # Relocate for convenience; subsequent code is essentially the same as previous,
+  relocate(MaxTempT_fix, .after = MaxTempT) %>%
+  relocate(MinTempT_fix, .after = MinTempT) %>%
+  relocate(MaxWSpdT_fix, .after = MaxWSpdT) %>%
+...
+```
+
+```{r echo = FALSE}
+dat.v5 %>%
+  mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT) + hours(1),
+                                  !RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT)) %>% format(., "%H:%M"),
+         MinTempT_fix = case_when(RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT) + hours(1),
+                                  !RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT)) %>% format(., "%H:%M"),
+         MaxWSpdT_fix = case_when(RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT) + hours(1),
+                                  !RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT)) %>% format(., "%H:%M")) %>%
+  mutate(interval = interval(TIMESTAMP - minutes(15), TIMESTAMP),
+         MaxTempT_check = if_else(hm(MaxTempT_fix) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxTempT_fix),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxTempT_fix)),
+         MinTempT_check = if_else(hm(MinTempT_fix) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MinTempT_fix),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MinTempT_fix)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT_fix) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxWSpdT_fix),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxWSpdT_fix)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
+```
+
+Overall our diagnostic is looking much better!
+At least now the occurrence of bad max/min times all appear random.
+Interesting that the corrected max/min times in Nov/Dec appear to be completely matched up with timestamps.
+This may be due to data being logged correctly for a period around maintenance when the tech would sync the datalogger to computer time.
+A switch to AKST from AKDT in November may explain why Nov/Dec data act differently from Sep/Oct.
+We'll apply these fixes, and then see if there are anymore records with all bad max/min/times.
+
+```{r}
+# Apply the max/min time shifts and save as new data table
+dat.v7 = dat.v5 %>%
+  mutate(MaxTempT_fix = case_when(RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT) + hours(1),
+                                  !RECORD %in% c(28515:28606, 31478:31486) ~ date(TIMESTAMP) + hm(MaxTempT)) %>% format(., "%H:%M"),
+         MinTempT_fix = case_when(RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT) + hours(1),
+                                  !RECORD %in% c(28514:28607, 31478:31487) ~ date(TIMESTAMP) + hm(MinTempT)) %>% format(., "%H:%M"),
+         MaxWSpdT_fix = case_when(RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT) + hours(1),
+                                  !RECORD %in% c(28514:28606, 31479:31486) ~ date(TIMESTAMP) + hm(MaxWSpdT)) %>% format(., "%H:%M"),
+         MaxTempT = MaxTempT_fix,
+         MinTempT = MinTempT_fix,
+         MaxWSpdT = MaxWSpdT_fix) %>%
+  select(-c(MaxTempT_fix, MinTempT_fix, MaxWSpdT_fix))
+
+# Run the max/min time checks as before
+dat.v7 %>%
+  mutate(interval = interval(TIMESTAMP - minutes(15), TIMESTAMP),
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxWSpdT)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  # Find the records that have bad max/min times for all three parameters,
+  filter(MaxTempT_bad == TRUE & MinTempT_bad == TRUE & MaxWSpdT_bad == TRUE)
+```
+
+We see that there are less than a handful of records where all of the max/min time checks are bad.
+Besides all of these records being on October, there doesn't appear to be any pattern any commonalities among them.
+Except, that the max/min times all all somewhat close to the ir expected interval.
+If we take a look at the entire data table (by removing the `filter()` function from that last chunk), we see that bad max/min times never seem to be off by more than 1-2 minutes before the interval.
+So what if we were to just shift our max/min times by -2 minutes?
+I only show the additional code that shifts the time check interval.
+See the .Rmd file for the full code.
+
+```{r eval = FALSE}
+dat.v7 %>%
+  # Calculate the interval as before, then shift by -2 minutes
+  mutate(interval = interval(TIMESTAMP - minutes(15), TIMESTAMP) %>% int_shift(by = minutes(-2)),
+  ...
+```
+
+```{r echo = FALSE}
+dat.v7 %>%
+  mutate(interval = interval(TIMESTAMP - minutes(15), TIMESTAMP) %>% int_shift(by = minutes(-2)),
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxWSpdT)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  {ggplot(data = .) + geom_col(aes(x = TIMESTAMP, y = MaxTempT_bad + MinTempT_bad + MaxWSpdT_bad))}
+```
+
+OK- we still have bad max/min times, however, none of the records show all three parameters as bad.
+At quick glance we see the these troublesome records seem to match up with station maintenance dates.
+Let's check which ones.
+I only show the code that filters for any bad max/min times.
+See the .Rmd file for the full code.
+
+```{r eval = FALSE}
+dat.v7 %>%
+  # Code to generate interval and time checks is same as previous chunk
+  ...
+  # Similar to filtering for all bad times, we use | to filter for any bad time.
+  filter(MaxTempT_bad == TRUE | MinTempT_bad == TRUE | MaxWSpdT_bad == TRUE)
+```
+
+```{r echo = FALSE}
+dat.v7 %>%
+  mutate(interval = interval(TIMESTAMP - minutes(15), TIMESTAMP) %>% int_shift(by = minutes(-2)),
+         MaxTempT_check = if_else(hm(MaxTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxTempT)),
+         MinTempT_check = if_else(hm(MinTempT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MinTempT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MinTempT)),
+         MaxWSpdT_check = if_else(hm(MaxWSpdT) > hours(23) + minutes(45) & date(TIMESTAMP) > date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1], n = 2)) + hm(MaxWSpdT),
+                                  date(lag(TIMESTAMP, default = .$TIMESTAMP[1])) + hm(MaxWSpdT)),
+         MaxTempT_bad = !MaxTempT_check %within% interval,
+         MinTempT_bad = !MinTempT_check %within% interval,
+         MaxWSpdT_bad = !MaxWSpdT_check %within% interval) %>%
+  filter(MaxTempT_bad == TRUE | MinTempT_bad == TRUE | MaxWSpdT_bad == TRUE)
+```
+
+When we look through these 59 records that still have a bad max/min times, they all seem to match up with station maintenance.
+Notably we find that Nov/Dec now have bad time checks where we did not previously.
+So we probably need to treat these records differently than Sep/Oct.
+We will stop messing with the data here since we have narrowed the issues to a manageable amount of records.
+Still, reducing the bad time checks to 59 records - all of which surround station maintenance - gives us good footing for being able to use the data.
+Next steps of data investigation should include checking the .CR1X program file.
+This may give us info as to why timestamps and min/max times were recorded poorly.
